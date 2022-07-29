@@ -57,6 +57,24 @@
                 "--model_dir", "D:\\datasets\\LBR\\output_dataset\\dataset_4_HPC", 
                 "--use_case_name", "UC001",
             ]
+        },
+        {
+            "name": "Py: Generate LBR dataset",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/nlpde.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--action", "generate",
+                "--data_dir", "D:\\datasets\\LBR\\original\\PDFs",
+                "--output_dir", "D:\\datasets\\LBR\\output_dataset\\new",
+                "--split_type", "line",
+                "--lang", "fra",
+                "--detect_lang", "True",
+                "--worker_load", "10",
+                "--total_workers", "5",
+                "--distrib_tool","pool"
+            ]
         }
     ]
 }
