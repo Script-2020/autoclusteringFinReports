@@ -8,7 +8,8 @@ from pathlib import Path
 import importlib
 import timeit
 import requests
-import random 
+import random
+import re
 import torch
 import multiprocessing as mp
 import ray
@@ -17,7 +18,7 @@ from torch.utils.data import Dataset
 import pytesseract
 from pytesseract import Output
 from pdf2image import convert_from_path 
-import fitz 
+import fitz
 import pikepdf
 from bs4 import BeautifulSoup
 from ray.util.multiprocessing.pool import Pool
@@ -53,8 +54,8 @@ def apply_ocr_and_html(info):
         
         sample_response_list[pdf_file_path] =  {'words':[], 'bbox':[], 'pages':[]}
     
-
         #using pdf2toimage to get images from pdf
+
         try:
             with pikepdf.open(pdf_file_path) as pdf:
                 sample_response_list[pdf_file_path]['total_pages'] =  len(pdf.pages)
@@ -110,7 +111,7 @@ def apply_ocr_and_html(info):
                 oLanguage = res_rotation['lang']
                 rotation = res_rotation['rotation']
                 #TODO :add all the languages that were discovered
-                ocr_df = pytesseract.image_to_data(res_rotation['image'], output_type='data.frame', config = '-l ' + oLanguage[0])  #config = r'-l ' + lang + ' --oem 3 --psm 6'
+                ocr_df = pytesseract.image_to_data(res_rotation['image'], output_type='data.frame', config = '-l ' + oLanguage[0])  
                 ocr_df = ocr_df.dropna().reset_index(drop=True)
 
                 oImage = Path(pdf_file_path)
@@ -194,13 +195,12 @@ def apply_ocr_and_html(info):
                 for i,line in enumerate (text_lines):
                     normalized_bbox = normalize_box([line['x'], line['y'], line['x2'], line['y2']], width, height)
                     bbox_dic =  {'file_name':file_name,'page_number':i_page+page_start+1,'line_number':line,'n_y':normalized_bbox[0], 'n_y':normalized_bbox[1],'n_x2': normalized_bbox[2], 'n_y2':normalized_bbox[3], 'page_width':width, 'page_height':height} 
-                
+                                    
                     text_boxes.append(bbox_dic)
 
-                #correct OCR reading
                 page_fitz = doc_fitz[i_page+page_start]
                 page_html = page_fitz.get_text("html")
-                html_content = BeautifulSoup(page_html, "html.parser") 
+                html_content = BeautifulSoup(page_html, "html.parser")
 
                 #check if the page is empty, scanned or encoded
                 content_type, read_confidence, number_images  = getHTMLInformation(html_content, page_html, word_list)
@@ -211,9 +211,8 @@ def apply_ocr_and_html(info):
                     encrypted = "N"
 
                 #list of information at page level
-                
-                page_dic = {'file_name':file_name, 'page_number': i_page+page_start+1, 'page_width': width,'page_height': height, 'orientation':orientation, 'tangle': rotation, 
-                    'language':oLanguage[0], 'lang_confidence': str(oLanguage[1]), 'content_type': content_type, 'read_confidence':read_confidence, 'encrypted': encrypted, 'tnumber_images':number_images}
+                page_dic = {'file_name':file_name, 'page_number': i_page+page_start+1, 'page_width': width,'page_height': height, 'orientation':orientation, 'angle': rotation, 
+                    'language':oLanguage[0], 'lang_confidence': str(oLanguage[1]), 'content_type': content_type, 'read_confidence':read_confidence, 'encrypted': encrypted, 'number_images':number_images}
                 assert len(text_lines)==len(text_boxes)
                 if len(text_lines) >0: 
                     sample_response_list[pdf_file_path]['words'].extend(text_lines)
@@ -224,7 +223,6 @@ def apply_ocr_and_html(info):
 
     return sample_response_list
 
-#remote_processing = apply_ocr_and_html.remote() #ray.remote(apply_ocr_and_html)
 
 def normalize_box(box, width, height):
      return [
@@ -270,7 +268,7 @@ def getPageTextRotating(image, image_name, detect_lang=True, lang=None, lang_mod
     else:
         image_temp = image
     
-    text_ = pytesseract.image_to_string(image_temp, config = '-l ' + '+'.join(list(langs.keys())) + ' --oem 3 --psm 6')  #config = r'-l ' + lang + ' --oem 3 --psm 6'
+    text_ = pytesseract.image_to_string(image_temp, config = '-l ' + '+'.join(list(langs.keys())) + ' --oem 3 --psm 6') 
     text_ = text_.lower()
     words = [w for line in text_.split('\n') for w in line.split(' ') if len(w.strip())>0]
 
@@ -287,7 +285,7 @@ def getPageTextRotating(image, image_name, detect_lang=True, lang=None, lang_mod
         else:
             lang = [lang, 2]
 
-  
+
     return {'image': image_temp, 'rotation': orientation, 'status':status, 'lang': lang}
     
         
@@ -358,7 +356,7 @@ def getLanguageByWords(tokenized_text, words_modules):
 
         if np.sum(ratios_stopwords) >0:
             confidence = int(np.max(ratios_stopwords) / np.sum(ratios_stopwords)*100)/100
-        if confidence ==0: 
+        if confidence ==0: #check how to improve this, create a dictionary of words that falls in this category and then organize per language.
             return [langs_eq[0], confidence]
         return [langs_eq[np.argmax(ratios_stopwords)], confidence]
     else: #Blank page, returning default language and confidence = 0
@@ -366,11 +364,11 @@ def getLanguageByWords(tokenized_text, words_modules):
 
 def cleanSentences(list_sentences): 
     for i, sentence in enumerate(list_sentences):
-        list_sentences[i][2] = list_sentences[i][2].replace("‘","'")
-        list_sentences[i][2] = list_sentences[i][2].replace("—","-")
-        list_sentences[i][2] = list_sentences[i][2].replace("’","'")
-        if len(sentence) > 3:
-            list_sentences[i][4] = list_sentences[i][2] 
+        list_sentences[i]['text'] = list_sentences[i]['text'].replace("‘","'")
+        list_sentences[i]['text'] = list_sentences[i]['text'].replace("—","-")
+        list_sentences[i]['text'] = list_sentences[i]['text'].replace("’","'")
+        if sentence.get('text_left') is not None:
+            list_sentences[i]['text_left'] = list_sentences[i]['text'] 
     return list_sentences
 
 def getHTMLInformation(html_content, html_pageText, ocr_word_list):
@@ -449,18 +447,14 @@ def decryptPDF(fileName):
     except:
         return None
 
-def extract_text_embeddings(tokenizer=None, dataset=None):
-    for record in dataset:
-        print('')
-
-   
+    
 class FDExTGenerator():
     
-    def __init__(self, data_dir, output_dir, split_type):
+    def __init__(self, data_dir, output_dir, split_type, filetype):
         self.output_dir = output_dir  
         self.split_type = split_type
         self.data_dir = data_dir
-        self.createFileNames()
+        self.createFileNames(filetype)
         
         if not os.path.exists(output_dir):
             os.mkdir(output_dir)
@@ -468,20 +462,26 @@ class FDExTGenerator():
         self.loaded_docs = {}
 
         if os.path.exists(self.pageInfo_filename):
-            with open(self.pageInfo_filename, 'r') as f:
-                loaded_pages =  f.readlines()
-                if len(loaded_pages) > 0: 
-                    loaded_pages = [page.split('\t')[:2] for page in loaded_pages] 
-                    self.loaded_docs = {doc[0]:0 for doc in loaded_pages}
-    
+            if filetype =='json':
+                 with open(self.pageInfo_filename, ) as f:
+                    loaded_pages = json.load(f)
+                    self.loaded_docs = {doc['file_name']:0 for doc in loaded_pages} 
 
-    def createFileNames(self):
-        self.text_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '.txt')  
-        self.bbox_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_bbox.txt'  ) 
-        self.format_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_format.txt' )
-        self.pageInfo_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_page_info.txt') 
-        self.docInfo_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_doc_info.txt' )
-        self.ttype_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_ttype.txt'   )
+            elif filetype == 'txt':
+                with open(self.pageInfo_filename, 'r') as f:
+                    loaded_pages =  f.readlines()
+                    if len(loaded_pages) > 0: 
+                        loaded_pages = [page.split('\t')[:2] for page in loaded_pages] 
+                        self.loaded_docs = {doc[0]:0 for doc in loaded_pages}
+
+
+    def createFileNames(self, filetype="json"):
+        self.text_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '.' + filetype)  
+        self.bbox_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_bbox.' + filetype) 
+        self.format_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_format.' + filetype)
+        self.pageInfo_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_page_info.' + filetype) 
+        self.docInfo_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_doc_info.' + filetype)
+        self.ttype_filename = os.path.join(self.output_dir, 'text_' + self.split_type + '_ttype.' + filetype)
     
     
     def getListFiles(self, content_list):
@@ -510,8 +510,8 @@ class FDExTGenerator():
         return dataset_list
 
     def distribute(self, distrib_tool, dataset_batch, oPool=None):
-        if distrib_tool =='ray': 
-            results = oPool.map(apply_ocr_and_html, [l_batch for l_batch in dataset_batch]) 
+        if distrib_tool =='ray':
+            results = oPool.map(apply_ocr_and_html, [l_batch for l_batch in dataset_batch])
         else:
             oPool = mp.Pool(self.total_workers, maxtasksperchild=1)
             results = oPool.map(apply_ocr_and_html, dataset_batch)
@@ -565,17 +565,12 @@ class FDExTGenerator():
                             assert len(dataset_list['words']) == len(dataset_list['bbox']) 
                     
                     assert len(dataset_list['words']) == len(dataset_list['bbox']) 
-                    
-                    #headers
-                    text_lines_header = 'file_name\tpage_number\tline_number\ttext\tx\ty\tx2\ty2\tw\th\tavg_h'
-                    bbox_lines_header = 'file_name\tpage_number\tline_number\tn_y\tn_y\tn_x2\tn_y2\tpage_width\tpage_height'
-                    page_info_header = 'file_name\tpage_number\tpage_width\tpage_height\torientation\tangle\tlanguage\tlang_confidence\tcontent_type\tread_confidence\tencrypted\tnumber_images'
-                    
+                                       
                     #save files
-                    save_data(dataset_list['pages'], self.pageInfo_filename, header=page_info_header)
+                    save_data(dataset_list['pages'], self.pageInfo_filename)
                     if len(dataset_list['words'])>0:
-                        save_data(dataset_list['words'], self.text_filename, header=text_lines_header)
-                        save_data(dataset_list['bbox'], self.bbox_filename, header=bbox_lines_header)
+                        save_data(dataset_list['words'], self.text_filename)
+                        save_data(dataset_list['bbox'], self.bbox_filename)
                         dataset_list = {'words':[], 'bbox':[], 'pages':[]}
 
                 else:
@@ -602,14 +597,15 @@ class FDExTGenerator():
         self.worker_load = worker_load
         self.total_workers = total_workers
 
-        file_list = self.exploreDirectory(self.data_dir) 
-        
+        file_list = self.exploreDirectory(self.data_dir)
+
+        dataset_list = {'words':[], 'bbox':[], 'pages':[]}
         print('Already loaded ',  len(self.loaded_docs), 'documents in the dataset')
         print('Starting generation process for ' + str(len(file_list)) + ' documents')
         dataset_batch = []
         dataset_worker_batch = []
         for i_file in tqdm.tqdm(range(min(max_docs_per_run, len(file_list)))):
-            oFile = file_list[i_file]  
+            oFile = file_list[i_file] 
             print('Append document ', oFile.name , i_file ,' to list.')
             dataset_worker_batch.append({'datafile':str(oFile), 'split_type':self.split_type, 'detect_lang': self.detect_lang, 'lang':self.lang,'page_start':0,'page_end': max_pages_per_run})
             if len(dataset_worker_batch) % self.worker_load ==0 or len(dataset_worker_batch) == len(file_list):
@@ -620,46 +616,31 @@ class FDExTGenerator():
                     self.distribute_batch(oPool, distrib_tool, dataset_batch, max_pages_per_run)
 
 
-    def generate_document_metadata(self, data_dir, output_dir, input_file, 
-        required_indexes = {'company_id':'company_id','company_industry':'company_industry','file_name':'file_name','document_type':'document_type','document_year':'document_year'}):
-        with open(os.path.join(data_dir, input_file),'r', encoding='utf-8') as metadata_file:
-            metadata_text_list = json.load(metadata_file)
-            metadata_headers_extra = [item for item in metadata_text_list[0].keys() if required_indexes.get(item) is None]
-            metadata_text_dict = {item['file_name']:item for item in metadata_text_list}
-        
-        with open(os.path.join(data_dir,self.pageInfo_filename),'r') as page_info:
-            page_info = page_info.readlines()
-            indexed_docs = [item.split('\t') for item in page_info[1:]]
-            indexed_docs = {i:(True,metadata_text_dict[item[0]], item[1]) if metadata_text_dict.get(item[0]) is not None else (False,item, item[1]) for i, item in enumerate(indexed_docs)}
-        file_name =  os.path.join(output_dir, self.docInfo_filename) 
-        document_info_header = 'file_name\tpage_number\tcompany_id\tdocument_year\tdocument_type\tcompany_industry'
-        if len(metadata_headers_extra) >0:
-            document_info_header+='\t' + '\t'.join(metadata_headers_extra)
-        data_list = []
 
-        for i in indexed_docs:
-            if indexed_docs[i][0]:
-                data_list.append(indexed_docs[i][1][required_indexes['file_name']]+ '\t' + indexed_docs[i][2] + '\t' + 
-                    str(indexed_docs[i][1][required_indexes['company_id']]) + '\t' + str(indexed_docs[i][1][required_indexes['document_year']]) + '\t' + 
-                    indexed_docs[i][1][required_indexes['document_type']]+ '\t' + indexed_docs[i][1][required_indexes['company_industry']] + '\t' +
-                    '\t'.join([indexed_docs[i][1][item].replace('\t',' ') if indexed_docs[i][1][item] is not None else ''  for item in metadata_headers_extra]))
-            else:
-                data_list.append(indexed_docs[i][1][0]+ '\t'+indexed_docs[i][2] + '\t' + '0' + '\t' + '0' + '\t' + '\t'+ ''.join(['\t' for item in metadata_headers_extra]))
-            
-        save_data(data_list, file_name, document_info_header)    
-
-
-def save_data(data_list, file_name, header):
+def save_data(data_list, file_name, filetype='json'):
     append_header = False
     if not os.path.exists(file_name):
         append_header = True
-    with open(file_name, 'a', encoding='utf-8') as file:   
-        if append_header:     
-            file.write(header + '\n')
-        for row in data_list:
-            file.write(str(row) + '\n')
-        print('updating file ', file_name)
+    if filetype =='json': 
+        existing_data = []
+        if not append_header:        
+            with open(file_name, 'r') as file:    
+                existing_data = json.load(file) 
+        
+        existing_data.extend(data_list)
 
+        with open(file_name, 'w') as file:    
+            json.dump(existing_data, file)
+            print('updating file ', file_name)
+    elif filetype =='txt':
+        with open(file_name, 'a', encoding='utf-8') as file:   
+            if append_header:     
+                header = '\t'.join([item for item in row])
+                file.write(header + '\n')
+            for row in data_list:
+                row_content = '\t'.join([str(row[item]) for item in row]) + '\n'
+                file.write(row_content)
+            print('updating file ', file_name)
 class FDExt(Dataset):
 
     def __init__(self, data_dir, output_dir): 
@@ -680,7 +661,15 @@ class FDExt(Dataset):
                 os.mkdir(self.output_dir)
  
 
-    def loadDataset(self, tasks_= 'default', filter_last_doc=None, filter_type_doc=None, filter_industry_cia=None , filter_lang=None, only_pageLevel = False):      
+    def loadDataset(self, tasks_= 'default', filter_last_doc=None, filter_type_doc=None, filter_industry_cia=None , filter_lang=None, only_pageLevel = False):
+        '''
+        tasks_: Data to return togueter with the text
+        doc_filter: If there is a document metadata file, a set of filters can be specified in a dictionary that could have the following keys:
+        - last_doc: Only the last doc of the same company id is returned, can have any value.
+        - type_doc: Only documents with the specified value (document type)
+        - cia_ind: Only documents that belongs to the specified value (industry)
+        '''
+        
 
         doc_filters = {}
 
@@ -696,12 +685,8 @@ class FDExt(Dataset):
         if not os.path.exists(self.data_dir):
             raise Exception('The data directory does not exists. ')
         else:
-            self.get_datarecords(self.data_dir, tasks_=tasks_, doc_filters=doc_filters, only_pageLevel=only_pageLevel)
-            if not only_pageLevel:
-                if 'embeddings' in tasks_:
-                    extract_text_embeddings(tokenizer=None)
-
-                   
+            self.get_datarecords(self.data_dir, tasks_=tasks_, doc_filters=doc_filters, only_pageLevel=only_pageLevel) #other tasks: bbox, images+bbox, format+bbox
+           
             
 
     def get_datarecords(self, data_dir, labels_path = None, tasks_ = 'default', doc_filters=None, only_pageLevel = False): 
@@ -1053,6 +1038,14 @@ if __name__ == '__main__':
         required=False, 
         help="The tool for redistributing the parallel work. Ray or pool.", )
 
+        
+    parser.add_argument(
+        "--filetype",
+        default="json",
+        type=str,
+        required=False, 
+        help="Extension for reading/generating the files (json, txt).", )
+
 
     args = parser.parse_args()
 
@@ -1062,7 +1055,7 @@ if __name__ == '__main__':
     print('Number of processors ' + str(mp.cpu_count()))
 
     if args.action == 'generate':
-        oFDExTGenerator = FDExTGenerator(args.data_dir, args.output_dir, args.split_type)
+        oFDExTGenerator = FDExTGenerator(args.data_dir, args.output_dir, args.split_type, args.filetype)
         oFDExTGenerator.generateFiles(args.detect_lang, args.lang, args.worker_load, args.total_workers, args.max_docs, args.max_pages, args.distrib_tool) 
     elif args.action =='load':
         oFDExt = FDExt(args.data_dir, args.output_dir)
